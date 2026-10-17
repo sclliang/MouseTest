@@ -5,7 +5,6 @@ MouseTest 是从 `FactoryTestCases` 的 `TouchPad` 模块抽出的独立 Win32/C
 - 源项目：`D:\Code\FactoryTestCases`，源模块 `src/modules/touch_pad`
 - 源版本：`2.15.10.17`
 - 本工具版本：`1.0.10.17`
-- 公开源码：https://github.com/sclliang/MouseTest
 
 ## 使用
 
