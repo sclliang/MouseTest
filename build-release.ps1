@@ -18,7 +18,7 @@ if ($LASTEXITCODE -ne 0) { throw 'CMake 配置失败。' }
 & cmake.exe --build $buildRoot --config Release --target MouseTest --parallel
 if ($LASTEXITCODE -ne 0) { throw '正式 EXE 编译失败。' }
 if ($RunTests) {
-    & cmake.exe --build $buildRoot --config Release --target MouseTestConfigTests MouseTestLogicTests MouseTestWindowTests --parallel
+    & cmake.exe --build $buildRoot --config Release --target MouseTestConfigTests MouseTestLogicTests MouseTestWindowTests MouseTestMouseConfigTests MouseTestMouseLogicTests MouseTestMouseWindowTests MouseTestToolConfigTests --parallel
     if ($LASTEXITCODE -ne 0) { throw '定向验证程序编译失败。' }
     & ctest.exe --test-dir $buildRoot -C Release --output-on-failure
     if ($LASTEXITCODE -ne 0) { throw '鼠标测试定向验证失败。' }

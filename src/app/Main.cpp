@@ -1,13 +1,11 @@
 #include "Application.h"
 
 #include "modules/ModuleConfig.h"
-#include "modules/touch_pad/TouchPadConfig.h"
 
 #include <windows.h>
 
 #include <filesystem>
 #include <utility>
-#include <vector>
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
 {
@@ -27,14 +25,14 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
             }
             else
             {
-                auto loaded = ftc::modules::touch_pad::LoadConfig(*source.config);
+                auto loaded = mouse_app::LoadToolConfig(*source.config);
                 if (!loaded.success)
                 {
                     options.startupError = loaded.error;
                 }
                 else
                 {
-                    options.config = loaded.config;
+                    options.tests = loaded.selection;
                     options.warnings = std::move(loaded.warnings);
                 }
             }

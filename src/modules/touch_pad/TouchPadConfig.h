@@ -1,5 +1,7 @@
 #pragma once
 
+#include "modules/Language.h"
+
 #include <string>
 #include <vector>
 
@@ -7,8 +9,6 @@ namespace ftc::modules { class ModuleConfig; }
 
 namespace ftc::modules::touch_pad
 {
-enum class Language { Chinese, English, Vietnamese };
-
 struct Exclusion final
 {
     bool enabled{};

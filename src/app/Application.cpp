@@ -1,10 +1,12 @@
 #include "Application.h"
 
+#include "modules/mouse/MouseWindow.h"
 #include "modules/touch_pad/TouchPadWindow.h"
 
 #include <windows.h>
 
 #include <filesystem>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -17,10 +19,23 @@ namespace mouse_app
 {
 namespace
 {
-using ftc::modules::touch_pad::Config;
-using ftc::modules::touch_pad::Language;
-using ftc::modules::touch_pad::WindowResult;
-using ftc::modules::touch_pad::WindowState;
+using ftc::modules::Language;
+using MouseConfig = ftc::modules::mouse::Config;
+using MouseResult = ftc::modules::mouse::WindowResult;
+using MouseState = ftc::modules::mouse::WindowState;
+using TouchPadConfig = ftc::modules::touch_pad::Config;
+using TouchPadResult = ftc::modules::touch_pad::WindowResult;
+using TouchPadState = ftc::modules::touch_pad::WindowState;
+
+enum class Outcome
+{
+    Pass,
+    Fail,
+    Cancel,
+    Fault,
+};
+
+using LogFunction = std::function<void(const wchar_t*, const std::wstring&)>;
 
 struct Handle final
 {
@@ -38,19 +53,20 @@ struct Handle final
     return value;
 }
 
-[[nodiscard]] const wchar_t* ResultName(const WindowResult result) noexcept
+[[nodiscard]] const wchar_t* ResultName(const Outcome result) noexcept
 {
     switch (result)
     {
-    case WindowResult::Passed: return L"PASS";
-    case WindowResult::Cancelled: return L"CANCEL";
-    case WindowResult::Failed:
-    case WindowResult::Faulted: return L"FAIL";
+    case Outcome::Pass: return L"PASS";
+    case Outcome::Cancel: return L"CANCEL";
+    case Outcome::Fail:
+    case Outcome::Fault: return L"FAIL";
     }
     return L"FAIL";
 }
 
-[[nodiscard]] const wchar_t* Text(const Language language, const wchar_t* zh, const wchar_t* en, const wchar_t* vi) noexcept
+[[nodiscard]] const wchar_t* Text(const Language language, const wchar_t* const zh,
+    const wchar_t* const en, const wchar_t* const vi) noexcept
 {
     switch (language)
     {
@@ -72,7 +88,7 @@ struct Handle final
     return L"zh-CN";
 }
 
-[[nodiscard]] std::wstring FingerText(const Config& config)
+[[nodiscard]] std::wstring TouchPadFinger(const TouchPadConfig& config)
 {
     if (!config.exclusion.enabled) return L"<none>";
     return std::to_wstring(config.exclusion.corner) + L"x" +
@@ -110,6 +126,160 @@ struct Handle final
     static_cast<void>(UnlockFileEx(file.value, 0, MAXDWORD, MAXDWORD, &overlap));
     return status;
 }
+
+[[nodiscard]] Outcome MapTouchPad(const TouchPadResult result) noexcept
+{
+    switch (result)
+    {
+    case TouchPadResult::Passed: return Outcome::Pass;
+    case TouchPadResult::Cancelled: return Outcome::Cancel;
+    case TouchPadResult::Failed: return Outcome::Fail;
+    case TouchPadResult::Faulted: return Outcome::Fault;
+    }
+    return Outcome::Fault;
+}
+
+[[nodiscard]] Outcome MapMouse(const MouseResult result) noexcept
+{
+    switch (result)
+    {
+    case MouseResult::Passed: return Outcome::Pass;
+    case MouseResult::Failed: return Outcome::Fail;
+    case MouseResult::Faulted: return Outcome::Fault;
+    }
+    return Outcome::Fault;
+}
+
+[[nodiscard]] Outcome Combine(const Outcome left, const Outcome right) noexcept
+{
+    if (left == Outcome::Fail || left == Outcome::Fault || right == Outcome::Fail || right == Outcome::Fault)
+        return Outcome::Fail;
+    if (left == Outcome::Cancel || right == Outcome::Cancel) return Outcome::Cancel;
+    return Outcome::Pass;
+}
+
+[[nodiscard]] Outcome RunTouchPad(const TouchPadConfig& config, const LogFunction& log)
+{
+    struct Run final
+    {
+        Outcome outcome{Outcome::Fault};
+        bool completed{};
+    } run;
+
+    auto state = std::make_shared<TouchPadState>();
+    state->config = config;
+    state->skipHardwareCheck = false;
+    state->onProgress = {};
+    state->onDeviceReady = [&log](const std::wstring& deviceName) {
+        log(L"INFO", L"已选择 Windows Precision Touchpad：" +
+            (deviceName.empty() ? std::wstring(L"<设备名称不可用>") : deviceName));
+    };
+    state->onTrace = [&log](const std::wstring& message) { log(L"INFO", message); };
+    state->onError = [&log](const std::wstring& message) { log(L"ERROR", message); };
+    unsigned diagnostics{};
+    state->onDiagnostic = [&log, &diagnostics](const std::wstring& message) {
+        if (diagnostics < 20U) log(L"WARN", L"触摸板原始输入报告已忽略：" + message);
+        else if (diagnostics == 20U) log(L"WARN", L"触摸板原始输入报告继续失败，后续同类 WARNING 已省略");
+        ++diagnostics;
+    };
+    state->onFinished = [&run](const TouchPadResult result) {
+        run.outcome = MapTouchPad(result);
+        run.completed = true;
+        PostQuitMessage(0);
+    };
+
+    std::wstring error;
+    const HWND window = ftc::modules::touch_pad::CreateTouchPadWindow(nullptr, state, true, error);
+    if (!window)
+    {
+        log(L"ERROR", error.empty() ? L"无法创建触摸板测试窗口" : error);
+        return Outcome::Fault;
+    }
+
+    bool loopFailed = false;
+    MSG message{};
+    for (;;)
+    {
+        const BOOL status = GetMessageW(&message, nullptr, 0U, 0U);
+        if (status == 0) break;
+        if (status == -1)
+        {
+            loopFailed = true;
+            log(L"ERROR", L"GetMessageW 失败，Win32=" + std::to_wstring(GetLastError()));
+            break;
+        }
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+    if (!run.completed && IsWindow(window) != FALSE) DestroyWindow(window);
+    if (!run.completed)
+    {
+        if (!loopFailed) log(L"WARN", L"触摸板测试窗口在完成前关闭");
+        return loopFailed ? Outcome::Fault : Outcome::Fail;
+    }
+    return run.outcome;
+}
+
+[[nodiscard]] Outcome RunMouse(const MouseConfig& config, const LogFunction& log)
+{
+    struct Run final
+    {
+        Outcome outcome{Outcome::Fault};
+        bool completed{};
+    } run;
+
+    auto state = std::make_shared<MouseState>();
+    state->config = config;
+    state->skipHardwareCheck = false;
+    state->passDisplayMs = 1000U;
+    unsigned diagnostics{};
+    state->onDeviceReady = [&log](const std::wstring& devices) {
+        log(L"INFO", L"已发现普通鼠标设备（任意一个均可）：" + devices);
+    };
+    state->onTrace = [&log](const std::wstring& message) { log(L"INFO", message); };
+    state->onError = [&log](const std::wstring& message) { log(L"ERROR", message); };
+    state->onDiagnostic = [&log, &diagnostics](const std::wstring& message) {
+        if (diagnostics < 20U) log(L"WARN", L"鼠标原始输入报告已忽略：" + message);
+        else if (diagnostics == 20U) log(L"WARN", L"鼠标原始输入报告继续失败，后续同类 WARNING 已省略");
+        ++diagnostics;
+    };
+    state->onFinished = [&run](const MouseResult result) {
+        run.outcome = MapMouse(result);
+        run.completed = true;
+        PostQuitMessage(0);
+    };
+
+    std::wstring error;
+    const HWND window = ftc::modules::mouse::CreateMouseWindow(nullptr, state, true, error);
+    if (!window)
+    {
+        log(L"ERROR", error.empty() ? L"无法创建鼠标测试窗口" : error);
+        return Outcome::Fault;
+    }
+
+    bool loopFailed = false;
+    MSG message{};
+    for (;;)
+    {
+        const BOOL status = GetMessageW(&message, nullptr, 0U, 0U);
+        if (status == 0) break;
+        if (status == -1)
+        {
+            loopFailed = true;
+            log(L"ERROR", L"GetMessageW 失败，Win32=" + std::to_wstring(GetLastError()));
+            break;
+        }
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+    if (!run.completed && IsWindow(window) != FALSE) DestroyWindow(window);
+    if (!run.completed)
+    {
+        if (!loopFailed) log(L"WARN", L"鼠标测试窗口在完成前关闭");
+        return loopFailed ? Outcome::Fault : Outcome::Fail;
+    }
+    return run.outcome;
+}
 } // namespace
 
 std::filesystem::path ExecutableDirectory()
@@ -133,28 +303,41 @@ int RunApplication(const std::filesystem::path& programDirectory, const SessionO
         machineSize = 0U;
     }
 
+    const TestSelection& tests = options.tests;
     std::wstring log;
-    log.reserve(4096U);
+    log.reserve(8192U);
     log += L"\r\n========== MouseTest " MOUSETEST_VERSION L" ==========\r\n";
     log += L"Start: " + Timestamp() + L"\r\n";
     log += L"Computer: " + std::wstring(machine, machineSize) + L"\r\n";
     log += L"Process: " + std::to_wstring(GetCurrentProcessId()) + L"\r\n";
     log += L"ProgramDirectory: " + programDirectory.wstring() + L"\r\n";
     log += L"ConfigFile: " + (options.configPath.empty() ? std::wstring(L"<built-in defaults>") : options.configPath.wstring()) + L"\r\n";
-    log += L"Config: RowCount=" + std::to_wstring(options.config.rows) +
-        L", ColumnCount=" + std::to_wstring(options.config.columns) +
-        L", LeftClickCount=" + std::to_wstring(options.config.leftClicks) +
-        L", RightClickCount=" + std::to_wstring(options.config.rightClicks) +
-        L", Finger=" + FingerText(options.config) +
-        L", Culture=" + CultureName(options.config.language) + L"\r\n";
+    log += std::wstring(L"Selected: TouchPad=") + (tests.touchPadEnabled ? L"1" : L"0") +
+        L", Mouse=" + (tests.mouseEnabled ? L"1" : L"0") + L"\r\n";
+    log += L"Language: " + std::wstring(CultureName(tests.language)) + L"\r\n";
+    log += L"TouchPad: RowCount=" + std::to_wstring(tests.touchPad.rows) +
+        L", ColumnCount=" + std::to_wstring(tests.touchPad.columns) +
+        L", LeftClickCount=" + std::to_wstring(tests.touchPad.leftClicks) +
+        L", RightClickCount=" + std::to_wstring(tests.touchPad.rightClicks) +
+        L", Finger=" + TouchPadFinger(tests.touchPad) + L"\r\n";
+    log += L"Mouse: MoveDistance=" + std::to_wstring(tests.mouse.moveDistance) +
+        L", MoveAxisDistance=" + std::to_wstring(tests.mouse.moveAxisDistance) +
+        L", WheelSteps=" + std::to_wstring(tests.mouse.wheelSteps) +
+        L", LeftClicks=" + std::to_wstring(tests.mouse.leftClicks) +
+        L", DoubleClicks=" + std::to_wstring(tests.mouse.doubleClicks) +
+        L", RightClicks=" + std::to_wstring(tests.mouse.rightClicks) +
+        L", MiddleClicks=" + std::to_wstring(tests.mouse.middleClicks) +
+        L", Drags=" + std::to_wstring(tests.mouse.drags) +
+        L", DragDistance=" + std::to_wstring(tests.mouse.dragDistance) +
+        L", ClickTolerance=" + std::to_wstring(tests.mouse.clickTolerance) + L"\r\n";
     for (const std::wstring& warning : options.warnings)
         log += Timestamp() + L" [WARN] " + warning + L"\r\n";
 
-    const auto addLog = [&log](const wchar_t* level, const std::wstring& message) {
+    const auto addLog = [&log](const wchar_t* const level, const std::wstring& message) {
         log += Timestamp() + L" [" + level + L"] " + message + L"\r\n";
     };
 
-    const auto complete = [&](const WindowResult result, const std::wstring& message) -> int {
+    const auto complete = [&](const Outcome result, const std::wstring& message) -> int {
         log += L"End: " + Timestamp() + L"\r\n";
         log += L"DurationMs: " + std::to_wstring(GetTickCount64() - started) + L"\r\n";
         log += L"Result: " + std::wstring(ResultName(result)) + L"\r\n" + message + L"\r\n";
@@ -168,13 +351,13 @@ int RunApplication(const std::filesystem::path& programDirectory, const SessionO
             MessageBoxW(nullptr, text.c_str(), L"MouseTest", MB_OK | MB_ICONERROR);
         }
         if (logError) return 3;
-        return result == WindowResult::Passed ? 0 : result == WindowResult::Cancelled ? 2 : 1;
+        return result == Outcome::Pass ? 0 : result == Outcome::Cancel ? 2 : 1;
     };
 
     if (!options.startupError.empty())
     {
         addLog(L"ERROR", options.startupError);
-        const int exitCode = complete(WindowResult::Failed, L"鼠标测试无法启动：配置或启动参数无效");
+        const int exitCode = complete(Outcome::Fail, L"鼠标测试无法启动：配置或启动参数无效");
         if (options.reportErrors && exitCode != 3)
         {
             const std::wstring text = L"鼠标测试无法启动 / Cannot start MouseTest:\r\n" + options.startupError;
@@ -183,85 +366,29 @@ int RunApplication(const std::filesystem::path& programDirectory, const SessionO
         return exitCode;
     }
 
-    WindowResult result = WindowResult::Failed;
-    bool completed = false;
-    unsigned ignoredDiagnostics = 0U;
-    auto state = std::make_shared<WindowState>();
-    state->config = options.config;
-    state->skipHardwareCheck = options.skipHardwareCheck;
-    state->onProgress = {};
-    state->onDeviceReady = [&addLog](const std::wstring& deviceName) {
-        addLog(L"INFO", L"已选择 Windows Precision Touchpad：" +
-            (deviceName.empty() ? std::wstring(L"<设备名称不可用>") : deviceName));
-    };
-    state->onTrace = [&addLog](const std::wstring& message) { addLog(L"INFO", message); };
-    state->onError = [&addLog](const std::wstring& message) { addLog(L"ERROR", message); };
-    state->onDiagnostic = [&addLog, &ignoredDiagnostics](const std::wstring& message) {
-        if (ignoredDiagnostics < 20U) addLog(L"WARN", L"触摸板原始输入报告已忽略：" + message);
-        else if (ignoredDiagnostics == 20U) addLog(L"WARN", L"触摸板原始输入报告继续失败，后续同类 WARNING 已省略");
-        ++ignoredDiagnostics;
-    };
-    state->onFinished = [&result, &completed](const WindowResult value) {
-        result = value;
-        completed = true;
-        PostQuitMessage(0);
-    };
-
-    std::wstring createError;
-    HWND window = ftc::modules::touch_pad::CreateTouchPadWindow(nullptr, state, true, createError);
-    if (!window)
+    Outcome overall = Outcome::Pass;
+    if (tests.touchPadEnabled)
     {
-        if (createError.empty()) createError = L"无法创建鼠标测试窗口";
-        addLog(L"ERROR", createError);
-        const int exitCode = complete(WindowResult::Failed, L"鼠标测试窗口创建失败");
-        if (options.reportErrors && exitCode != 3)
-        {
-            const std::wstring text = L"鼠标测试窗口创建失败 / Could not create MouseTest window:\r\n" + createError;
-            MessageBoxW(nullptr, text.c_str(), L"MouseTest", MB_OK | MB_ICONERROR);
-        }
-        return exitCode;
+        addLog(L"INFO", L"===== TouchPad =====");
+        const Outcome outcome = RunTouchPad(tests.touchPad, addLog);
+        addLog(L"INFO", std::wstring(L"TouchPad result: ") + ResultName(outcome));
+        overall = Combine(overall, outcome);
     }
-
-    MSG message{};
-    bool loopFailed = false;
-    for (;;)
+    if (tests.mouseEnabled)
     {
-        const BOOL status = GetMessageW(&message, nullptr, 0U, 0U);
-        if (status == 0) break;
-        if (status == -1)
-        {
-            loopFailed = true;
-            addLog(L"ERROR", L"GetMessageW 失败，Win32=" + std::to_wstring(GetLastError()));
-            break;
-        }
-        TranslateMessage(&message);
-        DispatchMessageW(&message);
-    }
-    if (!completed && IsWindow(window) != FALSE)
-        DestroyWindow(window);
-    if (!completed)
-    {
-        result = WindowResult::Failed;
-        if (!loopFailed) addLog(L"WARN", L"测试窗口在完成前关闭，按失败处理");
+        addLog(L"INFO", L"===== Mouse =====");
+        const Outcome outcome = RunMouse(tests.mouse, addLog);
+        addLog(L"INFO", std::wstring(L"Mouse result: ") + ResultName(outcome));
+        overall = Combine(overall, outcome);
     }
 
     std::wstring finalMessage;
-    switch (result)
-    {
-    case WindowResult::Passed:
-        finalMessage = Text(options.config.language, L"触摸板测试通过", L"TouchPad test PASS", L"Kiểm tra bàn di chuột đạt");
-        break;
-    case WindowResult::Cancelled:
-        finalMessage = Text(options.config.language, L"触摸板测试已取消", L"TouchPad test cancelled", L"Đã hủy kiểm tra bàn di chuột");
-        break;
-    case WindowResult::Faulted:
-        addLog(L"ERROR", L"触摸板测试窗口发生异常");
-        finalMessage = Text(options.config.language, L"触摸板测试失败：窗口异常", L"TouchPad test FAIL: window fault", L"Kiểm tra bàn di chuột thất bại: lỗi cửa sổ");
-        break;
-    case WindowResult::Failed:
-        finalMessage = Text(options.config.language, L"触摸板测试失败", L"TouchPad test FAIL", L"Kiểm tra bàn di chuột thất bại");
-        break;
-    }
-    return complete(result, finalMessage);
+    if (overall == Outcome::Pass)
+        finalMessage = Text(tests.language, L"全部已启用测试通过", L"All enabled tests PASS", L"Tất cả bài kiểm tra đã bật đạt");
+    else if (overall == Outcome::Cancel)
+        finalMessage = Text(tests.language, L"测试已取消", L"Tests cancelled", L"Đã hủy kiểm tra");
+    else
+        finalMessage = Text(tests.language, L"测试失败", L"Test FAIL", L"Kiểm tra thất bại");
+    return complete(overall, finalMessage);
 }
 } // namespace mouse_app
