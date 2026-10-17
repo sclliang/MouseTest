@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(MouseTest VERSION 1.1.10.17 LANGUAGES CXX RC)
+project(MouseTest VERSION 1.2.10.17 LANGUAGES CXX RC)
 if(NOT WIN32 OR NOT MSVC OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
     message(FATAL_ERROR "MouseTest requires Windows, MSVC and x64.")
 endif()
@@ -86,4 +86,9 @@ if(BUILD_TESTING)
     add_executable(MouseTestToolConfigTests tests/ToolConfigTests.cpp)
     target_link_libraries(MouseTestToolConfigTests PRIVATE MouseTestApplication)
     add_test(NAME MouseTestToolConfigTests COMMAND MouseTestToolConfigTests)
+
+    # Manual visual fixture: shows the ink canvas and drives a synthetic path.
+    # It moves the desktop cursor and is intentionally not registered with CTest.
+    add_executable(MouseInkVisual tests/MouseInkVisual.cpp)
+    target_link_libraries(MouseInkVisual PRIVATE MouseWindow)
 endif()

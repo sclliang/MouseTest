@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cwchar>
 #include <memory>
 #include <new>
@@ -32,6 +33,10 @@ const auto kFluentTheme = fluent::Palette::get(fluent::ThemeMode::Light,
     fluent::AccentPalette::fromColor(fluent::Color::rgb(0x0067C0)));
 const auto kFluentDesign = fluent::DesignPalette::get(kFluentTheme);
 const auto kFluentControls = fluent::ControlPalette::get(kFluentTheme);
+
+constexpr unsigned kMoveInk = 0x2B6CB0U;
+constexpr unsigned kDragInk = 0xE07B00U;
+constexpr unsigned kClickInk = 0x107C10U;
 
 [[nodiscard]] unsigned int UiRgb(const fluent::Color color) noexcept
 {
@@ -60,6 +65,13 @@ const auto kFluentControls = fluent::ControlPalette::get(kFluentTheme);
         static_cast<float>(rgb & 0xFFU) / 255.0F);
 }
 
+[[nodiscard]] D2D1_COLOR_F ColorA(const unsigned rgb, const float alpha) noexcept
+{
+    D2D1_COLOR_F color = Color(rgb);
+    color.a = alpha;
+    return color;
+}
+
 [[nodiscard]] float Dip(const LONG value, const UINT dpi) noexcept
 {
     return static_cast<float>(value) * 96.0F / static_cast<float>(dpi == 0U ? 96U : dpi);
@@ -72,17 +84,30 @@ const auto kFluentControls = fluent::ControlPalette::get(kFluentTheme);
     return D2D1::SizeF(Dip(rect.right, dpi), Dip(rect.bottom, dpi));
 }
 
-[[nodiscard]] float Ratio(const unsigned value, const unsigned target) noexcept
-{
-    if (target == 0U) return 1.0F;
-    return (std::min)(1.0F, static_cast<float>(value) / static_cast<float>(target));
-}
-
 struct Payload final
 {
     std::shared_ptr<WindowState> state;
     std::wstring* error{};
 };
+
+enum class TrailKind
+{
+    Move,
+    Drag,
+    Click,
+};
+
+struct TrailPoint final
+{
+    POINT point{};
+    TrailKind kind{TrailKind::Move};
+    bool newStroke{};
+};
+
+[[nodiscard]] D2D1_POINT_2F InkPoint(const POINT point, const UINT dpi) noexcept
+{
+    return D2D1::Point2F(Dip(point.x, dpi), Dip(point.y, dpi));
+}
 
 struct Context final
 {
@@ -93,7 +118,7 @@ struct Context final
     std::shared_ptr<WindowState> state;
     std::wstring* creationError{};
     TestState test;
-    std::vector<POINT> trail;
+    std::vector<TrailPoint> trail;
     WindowResult result{WindowResult::Failed};
     UINT dpi{96U};
     bool registered{};
@@ -109,12 +134,9 @@ struct Context final
     ComPtr<ID2D1SolidColorBrush> brush;
     ComPtr<IDWriteTextFormat> titleFormat;
     ComPtr<IDWriteTextFormat> subtitleFormat;
-    ComPtr<IDWriteTextFormat> rowTitleFormat;
-    ComPtr<IDWriteTextFormat> rowDetailFormat;
-    ComPtr<IDWriteTextFormat> liveFormat;
-    ComPtr<IDWriteTextFormat> cardLiveFormat;
-    ComPtr<IDWriteTextFormat> numberFormat;
-    ComPtr<IDWriteTextFormat> sectionFormat;
+    ComPtr<IDWriteTextFormat> dotLabelFormat;
+    ComPtr<IDWriteTextFormat> progressFormat;
+    ComPtr<IDWriteTextFormat> hintFormat;
 };
 
 void DrawText(Context& context, const std::wstring_view value, IDWriteTextFormat* const format,
@@ -124,18 +146,6 @@ void DrawText(Context& context, const std::wstring_view value, IDWriteTextFormat
     context.brush->SetColor(Color(rgb));
     context.target->DrawTextW(value.data(), static_cast<UINT32>(value.size()), format, rect,
         context.brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
-}
-
-void DrawProgressBar(Context& context, const D2D1_RECT_F bar, const float ratio)
-{
-    context.brush->SetColor(Color(0xE6EBF1));
-    context.target->FillRoundedRectangle(D2D1::RoundedRect(bar, 2.0F, 2.0F), context.brush.Get());
-    const float width = (std::max)(0.0F, (std::min)(1.0F, ratio));
-    if (width <= 0.0F) return;
-    D2D1_RECT_F filled = bar;
-    filled.right = bar.left + (bar.right - bar.left) * width;
-    context.brush->SetColor(Color(width >= 0.999F ? 0x107C10 : UiRgb(kFluentDesign.accent)));
-    context.target->FillRoundedRectangle(D2D1::RoundedRect(filled, 2.0F, 2.0F), context.brush.Get());
 }
 
 [[nodiscard]] HRESULT EnsureResources(const HWND window, Context& context)
@@ -152,19 +162,14 @@ void DrawProgressBar(Context& context, const D2D1_RECT_F bar, const float ratio)
             return context.writeFactory->CreateTextFormat(L"Microsoft YaHei UI", nullptr, weight,
                 DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, L"", &output);
         };
-        result = make(30.0F, DWRITE_FONT_WEIGHT_SEMI_BOLD, context.titleFormat);
-        if (SUCCEEDED(result)) result = make(14.0F, DWRITE_FONT_WEIGHT_NORMAL, context.subtitleFormat);
-        if (SUCCEEDED(result)) result = make(16.0F, DWRITE_FONT_WEIGHT_SEMI_BOLD, context.rowTitleFormat);
-        if (SUCCEEDED(result)) result = make(11.5F, DWRITE_FONT_WEIGHT_NORMAL, context.rowDetailFormat);
-        if (SUCCEEDED(result)) result = make(14.0F, DWRITE_FONT_WEIGHT_SEMI_BOLD, context.liveFormat);
-        if (SUCCEEDED(result)) result = make(24.0F, DWRITE_FONT_WEIGHT_SEMI_BOLD, context.cardLiveFormat);
-        if (SUCCEEDED(result)) result = make(13.0F, DWRITE_FONT_WEIGHT_SEMI_BOLD, context.numberFormat);
-        if (SUCCEEDED(result)) result = make(15.0F, DWRITE_FONT_WEIGHT_SEMI_BOLD, context.sectionFormat);
+        result = make(28.0F, DWRITE_FONT_WEIGHT_SEMI_BOLD, context.titleFormat);
+        if (SUCCEEDED(result)) result = make(13.0F, DWRITE_FONT_WEIGHT_NORMAL, context.subtitleFormat);
+        if (SUCCEEDED(result)) result = make(11.0F, DWRITE_FONT_WEIGHT_NORMAL, context.dotLabelFormat);        if (SUCCEEDED(result)) result = make(13.0F, DWRITE_FONT_WEIGHT_SEMI_BOLD, context.progressFormat);
+        if (SUCCEEDED(result)) result = make(16.0F, DWRITE_FONT_WEIGHT_NORMAL, context.hintFormat);
         if (FAILED(result)) return result;
-        static_cast<void>(context.liveFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING));
-        static_cast<void>(context.numberFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER));
-        static_cast<void>(context.numberFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER));
-        static_cast<void>(context.sectionFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER));
+        static_cast<void>(context.dotLabelFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER));
+        static_cast<void>(context.progressFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_TRAILING));
+        static_cast<void>(context.hintFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER));
     }
     if (!context.target)
     {
@@ -199,91 +204,6 @@ void DrawProgressBar(Context& context, const D2D1_RECT_F bar, const float ratio)
     }
 }
 
-[[nodiscard]] std::wstring CountDetail(const Language language, const unsigned count)
-{
-    if (count == 0U) return Text(language, L"已禁用", L"Disabled", L"Đã tắt");
-    if (language == Language::English)
-        return std::to_wstring(count) + (count == 1U ? L" time" : L" times");
-    return std::to_wstring(count) + Text(language, L" 次", L"", L" lần");
-}
-
-[[nodiscard]] std::wstring ProgressText(const Language language, const unsigned completed, const bool passed)
-{
-    const unsigned value = passed ? 7U : completed;
-    switch (language)
-    {
-    case Language::Chinese: return L"已完成 " + std::to_wstring(value) + L"/7";
-    case Language::English: return std::to_wstring(value) + L"/7 done";
-    case Language::Vietnamese: return L"Đã xong " + std::to_wstring(value) + L"/7";
-    }
-    return {};
-}
-
-[[nodiscard]] std::wstring TaskDetail(const Config& config, const unsigned index)
-{
-    const Language language = config.language;
-    switch (index)
-    {
-    case 0U:
-        if (config.moveDistance == 0U && config.moveAxisDistance == 0U)
-            return Text(language, L"已禁用", L"Disabled", L"Đã tắt");
-        return Text(language, L"水平/垂直各 ", L"Each axis ", L"Mỗi trục ") +
-            std::to_wstring(config.moveAxisDistance) +
-            Text(language, L"，总计 ", L", total ", L", tổng ") +
-            std::to_wstring(config.moveDistance);
-    case 1U:
-        if (config.wheelSteps == 0U) return Text(language, L"已禁用", L"Disabled", L"Đã tắt");
-        if (language == Language::English)
-            return L"Up/down each " + std::to_wstring(config.wheelSteps) +
-                (config.wheelSteps == 1U ? L" notch" : L" notches");
-        return Text(language, L"向上/向下各 ", L"", L"Lên/xuống mỗi hướng ") +
-            std::to_wstring(config.wheelSteps) + Text(language, L" 格", L"", L" nấc");
-    case 2U: return CountDetail(language, config.leftClicks);
-    case 3U:
-        if (config.doubleClicks == 0U) return Text(language, L"已禁用", L"Disabled", L"Đã tắt");
-        if (language == Language::English)
-            return config.doubleClicks == 1U ? L"Double-click quickly once" :
-                L"Double-click quickly " + std::to_wstring(config.doubleClicks) + L" times";
-        return Text(language, L"快速双击 ", L"", L"Nhấp đúp nhanh ") +
-            std::to_wstring(config.doubleClicks) + Text(language, L" 次", L"", L" lần");
-    case 4U: return CountDetail(language, config.rightClicks);
-    case 5U: return CountDetail(language, config.middleClicks);
-    default:
-        if (config.drags == 0U) return Text(language, L"已禁用", L"Disabled", L"Đã tắt");
-        if (language == Language::English)
-            return L"Hold left and drag " + std::to_wstring(config.dragDistance) + L" counts";
-        return Text(language, L"按住左键拖动 ", L"", L"Giữ trái và kéo ") +
-            std::to_wstring(config.dragDistance) + Text(language, L" 计数", L"", L" đơn vị");
-    }
-}
-
-[[nodiscard]] std::wstring TaskLive(const Config& config, const TestState& test, const unsigned index)
-{
-    const Language language = config.language;
-    const Progress& progress = test.Current();
-    switch (index)
-    {
-    case 0U:
-        if (config.moveDistance == 0U) return L"—";
-        return Text(language, L"总 ", L"total ", L"tổng ") + std::to_wstring(progress.moveTotal) +
-            L"/" + std::to_wstring(config.moveDistance);
-    case 1U:
-        if (config.wheelSteps == 0U) return L"—";
-        return L"↑ " + std::to_wstring(progress.wheelUp / 120U) + L"/" + std::to_wstring(config.wheelSteps) +
-            L" · ↓ " + std::to_wstring(progress.wheelDown / 120U) + L"/" + std::to_wstring(config.wheelSteps);
-    case 2U:
-        return config.leftClicks == 0U ? L"—" : std::to_wstring(progress.leftClicks) + L"/" + std::to_wstring(config.leftClicks);
-    case 3U:
-        return config.doubleClicks == 0U ? L"—" : std::to_wstring(progress.doubleClicks) + L"/" + std::to_wstring(config.doubleClicks);
-    case 4U:
-        return config.rightClicks == 0U ? L"—" : std::to_wstring(progress.rightClicks) + L"/" + std::to_wstring(config.rightClicks);
-    case 5U:
-        return config.middleClicks == 0U ? L"—" : std::to_wstring(progress.middleClicks) + L"/" + std::to_wstring(config.middleClicks);
-    default:
-        return config.drags == 0U ? L"—" : std::to_wstring(progress.drags) + L"/" + std::to_wstring(config.drags);
-    }
-}
-
 [[nodiscard]] bool TaskComplete(const TestState& test, const unsigned index) noexcept
 {
     switch (index)
@@ -298,30 +218,10 @@ void DrawProgressBar(Context& context, const D2D1_RECT_F bar, const float ratio)
     }
 }
 
-[[nodiscard]] std::wstring TipOne(const Config& config)
+[[nodiscard]] float Ratio(const unsigned value, const unsigned target) noexcept
 {
-    const std::wstring distance = std::to_wstring(config.dragDistance);
-    switch (config.language)
-    {
-    case Language::Chinese:
-        return L"单击：按下后原地松开；拖动：按住左键移动超过 " + distance + L" 计数后松开";
-    case Language::English:
-        return L"Click: press and release in place; Drag: hold left and move more than " + distance + L" counts";
-    case Language::Vietnamese:
-        return L"Nhấp: nhấn và nhả tại chỗ; Kéo: giữ trái và di chuyển hơn " + distance + L" đơn vị";
-    }
-    return {};
-}
-
-[[nodiscard]] std::wstring TipTwo(const Language language)
-{
-    switch (language)
-    {
-    case Language::Chinese: return L"双击间隔按系统设置；各项可任意顺序完成";
-    case Language::English: return L"Double-click uses the system interval; complete tasks in any order";
-    case Language::Vietnamese: return L"Nhấp đúp theo cài đặt hệ thống; có thể làm theo thứ tự bất kỳ";
-    }
-    return {};
+    if (target == 0U) return 1.0F;
+    return (std::min)(1.0F, static_cast<float>(value) / static_cast<float>(target));
 }
 
 [[nodiscard]] float TaskProgress(const Config& config, const TestState& test, const unsigned index) noexcept
@@ -343,45 +243,100 @@ void DrawProgressBar(Context& context, const D2D1_RECT_F bar, const float ratio)
     }
 }
 
-void UpdateTrail(const HWND window, Context& context)
+[[nodiscard]] std::wstring ProgressText(const Language language, const unsigned completed, const bool passed)
+{
+    const unsigned value = passed ? 7U : completed;
+    switch (language)
+    {
+    case Language::Chinese: return L"已完成 " + std::to_wstring(value) + L"/7";
+    case Language::English: return std::to_wstring(value) + L"/7 done";
+    case Language::Vietnamese: return L"Đã xong " + std::to_wstring(value) + L"/7";
+    }
+    return {};
+}
+
+[[nodiscard]] bool CursorClientPoint(const HWND window, POINT& point) noexcept
+{
+    if (!GetCursorPos(&point) || !ScreenToClient(window, &point)) return false;
+    RECT client{};
+    if (!GetClientRect(window, &client)) return false;
+    return PtInRect(&client, point) != FALSE;
+}
+
+void AddTrailPoint(Context& context, const POINT point, const TrailKind kind)
+{
+    bool newStroke = context.trail.empty() || context.trail.back().kind != kind;
+    if (!newStroke && kind != TrailKind::Click)
+    {
+        const LONG dx = point.x - context.trail.back().point.x;
+        const LONG dy = point.y - context.trail.back().point.y;
+        const long long distance = static_cast<long long>(std::llabs(dx)) + std::llabs(dy);
+        const double limit = 300.0 * static_cast<double>(context.dpi) / 96.0;
+        if (static_cast<double>(distance) > limit) newStroke = true;
+    }
+    context.trail.push_back(TrailPoint{point, kind, newStroke});
+    if (context.trail.size() > 4096U)
+    {
+        context.trail.erase(context.trail.begin());
+        context.trail.front().newStroke = true;
+    }
+}
+
+void UpdateTrail(const HWND window, Context& context) noexcept
 {
     POINT point{};
-    if (!GetCursorPos(&point) || !ScreenToClient(window, &point)) return;
-    if (context.trail.size() >= 96U) context.trail.erase(context.trail.begin());
-    context.trail.push_back(point);
+    if (!CursorClientPoint(window, point)) return;
+    try
+    {
+        AddTrailPoint(context, point, context.test.LeftDown() ? TrailKind::Drag : TrailKind::Move);
+    }
+    catch (...) {}
 }
 
-void DrawTrail(const Context& context, const D2D1_RECT_F trail, const D2D1_SIZE_F size, const UINT dpi)
+void AddClickPoint(const HWND window, Context& context) noexcept
 {
-    if (context.trail.size() < 2U) return;
-    const auto map = [&](const POINT point) {
-        const float x = (static_cast<float>(point.x) * 96.0F / static_cast<float>(dpi == 0U ? 96U : dpi)) /
-            (std::max)(1.0F, size.width);
-        const float y = (static_cast<float>(point.y) * 96.0F / static_cast<float>(dpi == 0U ? 96U : dpi)) /
-            (std::max)(1.0F, size.height);
-        return D2D1::Point2F(
-            trail.left + (std::clamp)(x, 0.0F, 1.0F) * (trail.right - trail.left),
-            trail.top + (std::clamp)(y, 0.0F, 1.0F) * (trail.bottom - trail.top));
-    };
-    context.brush->SetColor(Color(0x4A86C8));
+    POINT point{};
+    if (!CursorClientPoint(window, point)) return;
+    try { AddTrailPoint(context, point, TrailKind::Click); } catch (...) {}
+}
+
+void DrawTrail(const HWND window, Context& context)
+{
+    if (context.trail.empty()) return;
     for (std::size_t index = 1U; index < context.trail.size(); ++index)
-        context.target->DrawLine(map(context.trail[index - 1U]), map(context.trail[index]),
-            context.brush.Get(), 1.5F);
-    context.brush->SetColor(Color(UiRgb(kFluentDesign.accent)));
-    context.target->FillEllipse(
-        D2D1::Ellipse(map(context.trail.back()), 4.0F, 4.0F), context.brush.Get());
-}
-
-void DrawButton(Context& context, const D2D1_POINT_2F center, const wchar_t* const label,
-    const bool down, const bool done)
-{
-    const unsigned fill = down ? UiRgb(kFluentDesign.accent) : done ? 0x107C10 : 0xE8EDF3;
-    context.brush->SetColor(Color(fill));
-    context.target->FillEllipse(D2D1::Ellipse(center, 20.0F, 20.0F), context.brush.Get());
-    context.brush->SetColor(Color(down || done ? 0xFFFFFF : UiRgb(kFluentDesign.text)));
-    const D2D1_RECT_F rect = D2D1::RectF(center.x - 20.0F, center.y - 10.0F, center.x + 20.0F, center.y + 10.0F);
-    context.target->DrawTextW(label, static_cast<UINT32>(wcslen(label)), context.numberFormat.Get(), rect,
-        context.brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    {
+        const TrailPoint& previous = context.trail[index - 1U];
+        const TrailPoint& current = context.trail[index];
+        if (current.newStroke || current.kind == TrailKind::Click || previous.kind == TrailKind::Click) continue;
+        if (previous.kind != current.kind) continue;
+        context.brush->SetColor(Color(current.kind == TrailKind::Drag ? kDragInk : kMoveInk));
+        context.target->DrawLine(InkPoint(previous.point, context.dpi), InkPoint(current.point, context.dpi),
+            context.brush.Get(), current.kind == TrailKind::Drag ? 4.0F : 2.5F);
+    }
+    for (const TrailPoint& point : context.trail)
+    {
+        if (point.newStroke && point.kind != TrailKind::Click)
+        {
+            context.brush->SetColor(Color(point.kind == TrailKind::Drag ? kDragInk : kMoveInk));
+            context.target->FillEllipse(D2D1::Ellipse(InkPoint(point.point, context.dpi), 2.5F, 2.5F),
+                context.brush.Get());
+        }
+        else if (point.kind == TrailKind::Click)
+        {
+            const D2D1_POINT_2F center = InkPoint(point.point, context.dpi);
+            context.brush->SetColor(Color(kClickInk));
+            context.target->FillEllipse(D2D1::Ellipse(center, 7.0F, 7.0F), context.brush.Get());
+            context.brush->SetColor(Color(0xFFFFFF));
+            context.target->DrawEllipse(D2D1::Ellipse(center, 7.0F, 7.0F), context.brush.Get(), 1.5F);
+        }
+    }
+    POINT cursor{};
+    if (CursorClientPoint(window, cursor))
+    {
+        context.brush->SetColor(Color(context.test.LeftDown() ? kDragInk : kMoveInk));
+        context.target->FillEllipse(D2D1::Ellipse(InkPoint(cursor, context.dpi), 3.5F, 3.5F),
+            context.brush.Get());
+    }
 }
 
 void Paint(const HWND window, Context& context)
@@ -393,187 +348,101 @@ void Paint(const HWND window, Context& context)
     const bool passed = context.passed;
     context.target->BeginDraw();
     context.target->Clear(Color(UiRgb(kFluentDesign.window)));
+    DrawTrail(window, context);
 
-    const float margin = (std::clamp)(size.width * 0.035F, 24.0F, 64.0F);
-    const float titleTop = (std::max)(18.0F, size.height * 0.03F);
-    const float contentTop = titleTop + 82.0F;
-    const float contentBottom = size.height - margin;
-    const bool wide = size.width >= 980.0F;
-    const float listRight = wide ? size.width * 0.58F : size.width - margin;
+    const float headerHeight = (std::clamp)(size.height * 0.14F, 108.0F, 136.0F);
+    const float margin = (std::clamp)(size.width * 0.03F, 20.0F, 48.0F);
+    const float titleTop = (std::max)(6.0F, headerHeight * 0.08F);
+    const float subtitleTop = titleTop + 34.0F;
+    const float dotCenterY = headerHeight - 28.0F;
+    const float labelTop = headerHeight - 16.0F;
+
+    if (context.trail.empty() && !passed)
+    {
+        DrawText(context, Text(language, L"在整个屏幕上移动鼠标",
+            L"Move the mouse anywhere on the screen", L"Di chuyển chuột trên toàn màn hình"),
+            context.hintFormat.Get(),
+            D2D1::RectF(margin, (headerHeight + size.height) * 0.5F - 16.0F,
+                size.width - margin, (headerHeight + size.height) * 0.5F + 20.0F),
+            UiRgb(kFluentDesign.secondary));
+    }
+
+    context.brush->SetColor(ColorA(UiRgb(kFluentDesign.window), 0.93F));
+    context.target->FillRectangle(D2D1::RectF(0.0F, 0.0F, size.width, headerHeight), context.brush.Get());
+    context.brush->SetColor(Color(0xE1E5EA));
+    context.target->DrawLine(D2D1::Point2F(0.0F, headerHeight), D2D1::Point2F(size.width, headerHeight),
+        context.brush.Get(), 1.0F);
 
     DrawText(context, passed ? Text(language, L"鼠标测试通过", L"Mouse test PASS", L"Kiểm tra chuột đạt") :
-        Text(language, L"鼠标测试", L"Mouse Test", L"Kiểm tra chuột"),
-        context.titleFormat.Get(), D2D1::RectF(margin, titleTop, listRight, titleTop + 42.0F),
-        passed ? 0x107C10 : UiRgb(kFluentDesign.text));
+        Text(language, L"鼠标测试", L"Mouse Test", L"Kiểm tra chuột"), context.titleFormat.Get(),
+        D2D1::RectF(margin, titleTop, size.width * 0.55F, titleTop + 36.0F),
+        passed ? kClickInk : UiRgb(kFluentDesign.text));
+    DrawText(context, ProgressText(language, context.test.CompletedTasks(), passed),
+        context.progressFormat.Get(),
+        D2D1::RectF(size.width * 0.55F, titleTop + 2.0F, size.width - margin, titleTop + 26.0F),
+        passed ? kClickInk : UiRgb(kFluentDesign.accent));
     DrawText(context, passed ? Text(language, L"全部 7 项已完成，窗口即将关闭",
         L"All 7 tasks completed; the window is closing", L"Đã xong 7 mục; cửa sổ sắp đóng") :
         Text(language, L"请使用普通鼠标完成全部操作 · Esc：失败退出",
             L"Use a standard mouse to complete every task · Esc: fail and exit",
             L"Dùng chuột thường hoàn thành mọi thao tác · Esc: lỗi và thoát"),
-        context.subtitleFormat.Get(), D2D1::RectF(margin, titleTop + 44.0F, size.width - margin, titleTop + 70.0F),
+        context.subtitleFormat.Get(),
+        D2D1::RectF(margin, subtitleTop, size.width - margin, subtitleTop + 20.0F),
         UiRgb(kFluentDesign.secondary));
-    const std::wstring progressText = ProgressText(language, context.test.CompletedTasks(), passed);
-    DrawText(context, progressText, context.liveFormat.Get(),
-        D2D1::RectF(size.width * 0.55F, titleTop + 8.0F, size.width - margin, titleTop + 32.0F),
-        passed ? 0x107C10 : UiRgb(kFluentDesign.accent));
 
-    const bool twoColumns = wide && size.height >= 680.0F;
-    const unsigned columns = twoColumns ? 2U : 1U;
-    const unsigned rows = twoColumns ? 4U : 7U;
-    const float gapX = 14.0F;
-    const float gapY = (std::clamp)(size.height * 0.008F, 4.0F, 10.0F);
-    const float availableWidth = listRight - margin;
-    const float cardWidth = twoColumns ? (availableWidth - gapX) * 0.5F : availableWidth;
-    float cardHeight = twoColumns
-        ? (contentBottom - contentTop - gapY * 3.0F) / 4.0F
-        : (contentBottom - contentTop - gapY * 6.0F) / 7.0F;
-    cardHeight = (std::min)(cardHeight, twoColumns ? 160.0F : 68.0F);
-    cardHeight = (std::max)(20.0F, cardHeight);
-    const float totalHeight = static_cast<float>(rows) * cardHeight + static_cast<float>(rows - 1U) * gapY;
-    constexpr float footerHeight = 74.0F;
-    constexpr float footerGap = 12.0F;
-    const float availableHeight = contentBottom - contentTop;
-    const bool showFooter = twoColumns && totalHeight + footerGap + footerHeight <= availableHeight;
-    const float contentHeight = totalHeight + (showFooter ? footerGap + footerHeight : 0.0F);
-    const float listTop = contentTop + (std::max)(0.0F, (availableHeight - contentHeight) * 0.5F);
-    const bool compact = cardHeight < (twoColumns ? 112.0F : 40.0F);
-
+    const float slotWidth = (size.width - margin * 2.0F) / 7.0F;
     for (unsigned index = 0U; index < 7U; ++index)
     {
-        const unsigned row = index / columns;
-        const unsigned column = index % columns;
-        const float left = margin + static_cast<float>(column) * (cardWidth + gapX);
-        const float top = listTop + static_cast<float>(row) * (cardHeight + gapY);
-        const D2D1_RECT_F card = D2D1::RectF(left, top, left + cardWidth, top + cardHeight);
+        const float centerX = margin + slotWidth * (static_cast<float>(index) + 0.5F);
         const bool done = TaskComplete(context.test, index);
-        context.brush->SetColor(Color(done ? 0xEAF7EE : 0xFFFFFF));
-        context.target->FillRoundedRectangle(D2D1::RoundedRect(card, 10.0F, 10.0F), context.brush.Get());
-        context.brush->SetColor(Color(done ? 0x107C10 : UiRgb(kFluentControls.bottomBorder)));
-        context.target->DrawRoundedRectangle(D2D1::RoundedRect(card, 10.0F, 10.0F), context.brush.Get(), 1.0F);
-
-        const float radius = twoColumns ? 14.0F : (std::min)(12.0F, cardHeight * 0.28F);
-        const float centerY = twoColumns ? top + 22.0F : top + cardHeight * 0.5F;
-        const float badgeX = twoColumns ? left + 24.0F : margin + 20.0F;
-        context.brush->SetColor(Color(done ? 0x107C10 : 0xE8F0FA));
-        context.target->FillEllipse(D2D1::Ellipse(D2D1::Point2F(badgeX, centerY), radius, radius),
+        const float progress = TaskProgress(config, context.test, index);
+        context.brush->SetColor(Color(done ? kClickInk : progress > 0.0F ? UiRgb(kFluentDesign.accent) : 0xDCE3EB));
+        context.target->FillEllipse(D2D1::Ellipse(D2D1::Point2F(centerX, dotCenterY), 9.0F, 9.0F),
             context.brush.Get());
-        DrawText(context, std::to_wstring(index + 1U), context.numberFormat.Get(),
-            D2D1::RectF(badgeX - radius, centerY - radius, badgeX + radius, centerY + radius),
-            done ? 0xFFFFFF : UiRgb(kFluentDesign.accent));
-
-        if (twoColumns)
+        if (!done)
         {
-            const float textLeft = left + 48.0F;
-            DrawText(context, TaskTitle(language, index), context.rowTitleFormat.Get(),
-                D2D1::RectF(textLeft, top + 10.0F, left + cardWidth - 16.0F, top + 34.0F),
-                done ? 0x107C10 : UiRgb(kFluentDesign.text));
-            if (!compact)
-            {
-                DrawText(context, TaskDetail(config, index), context.rowDetailFormat.Get(),
-                    D2D1::RectF(textLeft, top + 36.0F, left + cardWidth - 16.0F, top + cardHeight - 62.0F),
-                    UiRgb(kFluentDesign.secondary));
-            }
-            DrawText(context, TaskLive(config, context.test, index), context.cardLiveFormat.Get(),
-                D2D1::RectF(left + 20.0F, top + cardHeight - 54.0F, left + cardWidth - 20.0F,
-                    top + cardHeight - 24.0F),
-                done ? 0x107C10 : UiRgb(kFluentDesign.accent));
-            DrawProgressBar(context,
-                D2D1::RectF(left + 20.0F, top + cardHeight - 16.0F, left + cardWidth - 20.0F,
-                    top + cardHeight - 12.0F),
-                TaskProgress(config, context.test, index));
+            context.brush->SetColor(Color(0xAEB8C4));
+            context.target->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(centerX, dotCenterY), 9.0F, 9.0F),
+                context.brush.Get(), 1.2F);
         }
         else
         {
-            const float textLeft = margin + 40.0F;
-            const float titleY = top + (compact ? 2.0F : 7.0F);
-            DrawText(context, TaskTitle(language, index), context.rowTitleFormat.Get(),
-                D2D1::RectF(textLeft, titleY, listRight - 190.0F, titleY + 22.0F),
-                done ? 0x107C10 : UiRgb(kFluentDesign.text));
-            if (!compact)
-            {
-                DrawText(context, TaskDetail(config, index), context.rowDetailFormat.Get(),
-                    D2D1::RectF(textLeft, top + 26.0F, listRight - 190.0F, top + cardHeight - 10.0F),
-                    UiRgb(kFluentDesign.secondary));
-            }
-            DrawText(context, TaskLive(config, context.test, index), context.liveFormat.Get(),
-                D2D1::RectF(listRight - 185.0F, top + 8.0F, listRight - 14.0F, top + 28.0F),
-                done ? 0x107C10 : UiRgb(kFluentDesign.accent));
-            if (!compact)
-            {
-                DrawProgressBar(context,
-                    D2D1::RectF(textLeft, top + cardHeight - 8.0F, listRight - 14.0F,
-                        top + cardHeight - 4.0F),
-                    TaskProgress(config, context.test, index));
-            }
+            context.brush->SetColor(Color(0xFFFFFF));
+            context.target->DrawLine(D2D1::Point2F(centerX - 4.5F, dotCenterY),
+                D2D1::Point2F(centerX - 1.5F, dotCenterY + 3.0F), context.brush.Get(), 1.8F);
+            context.target->DrawLine(D2D1::Point2F(centerX - 1.5F, dotCenterY + 3.0F),
+                D2D1::Point2F(centerX + 5.0F, dotCenterY - 4.0F), context.brush.Get(), 1.8F);
         }
+        DrawText(context, TaskTitle(language, index), context.dotLabelFormat.Get(),
+            D2D1::RectF(centerX - slotWidth * 0.5F + 2.0F, labelTop,
+                centerX + slotWidth * 0.5F - 2.0F, labelTop + 16.0F),
+            done ? kClickInk : UiRgb(kFluentDesign.secondary));
     }
 
-    if (showFooter)
-    {
-        const float footerTop = listTop + totalHeight + footerGap;
-        const D2D1_RECT_F footer = D2D1::RectF(margin, footerTop, listRight, footerTop + footerHeight);
-        context.brush->SetColor(Color(0xF7F9FC));
-        context.target->FillRoundedRectangle(D2D1::RoundedRect(footer, 10.0F, 10.0F), context.brush.Get());
-        context.brush->SetColor(Color(0xE6EBF1));
-        context.target->DrawRoundedRectangle(D2D1::RoundedRect(footer, 10.0F, 10.0F), context.brush.Get(), 1.0F);
-        DrawText(context, Text(language, L"提示", L"Tips", L"Gợi ý"), context.rowTitleFormat.Get(),
-            D2D1::RectF(footer.left + 16.0F, footer.top + 5.0F, footer.right - 16.0F, footer.top + 27.0F),
-            UiRgb(kFluentDesign.text));
-        DrawText(context, TipOne(config), context.rowDetailFormat.Get(),
-            D2D1::RectF(footer.left + 16.0F, footer.top + 28.0F, footer.right - 16.0F, footer.top + 46.0F),
-            UiRgb(kFluentDesign.secondary));
-        DrawText(context, TipTwo(language), context.rowDetailFormat.Get(),
-            D2D1::RectF(footer.left + 16.0F, footer.top + 47.0F, footer.right - 16.0F, footer.top + 66.0F),
-            UiRgb(kFluentDesign.secondary));
-    }
-
-    if (wide)
-    {
-        const D2D1_RECT_F panel = D2D1::RectF(size.width * 0.605F, contentTop, size.width - margin, contentBottom);
-        context.brush->SetColor(Color(0xFFFFFF));
-        context.target->FillRoundedRectangle(D2D1::RoundedRect(panel, 12.0F, 12.0F), context.brush.Get());
-        context.brush->SetColor(Color(UiRgb(kFluentControls.bottomBorder)));
-        context.target->DrawRoundedRectangle(D2D1::RoundedRect(panel, 12.0F, 12.0F), context.brush.Get(), 1.0F);
-        DrawText(context, Text(language, L"活动", L"Activity", L"Hoạt động"), context.sectionFormat.Get(),
-            D2D1::RectF(panel.left + 20.0F, panel.top + 12.0F, panel.right - 20.0F, panel.top + 38.0F),
-            UiRgb(kFluentDesign.text));
-
-        const float buttonsY = panel.bottom - 92.0F;
-        const D2D1_RECT_F trail = D2D1::RectF(panel.left + 20.0F, panel.top + 46.0F,
-            panel.right - 20.0F, buttonsY - 24.0F);
-        context.brush->SetColor(Color(0xF7F9FC));
-        context.target->FillRoundedRectangle(D2D1::RoundedRect(trail, 8.0F, 8.0F), context.brush.Get());
-        context.brush->SetColor(Color(0xE6EBF1));
-        context.target->DrawRoundedRectangle(D2D1::RoundedRect(trail, 8.0F, 8.0F), context.brush.Get(), 1.0F);
-        DrawTrail(context, trail, size, context.dpi);
-        if (context.trail.empty())
-        {
-            DrawText(context, Text(language, L"移动鼠标以显示轨迹", L"Move the mouse to show the trail",
-                L"Di chuyển chuột để hiện vết"), context.rowDetailFormat.Get(),
-                D2D1::RectF(trail.left + 12.0F, trail.top + (trail.bottom - trail.top) * 0.5F - 10.0F,
-                    trail.right - 12.0F, trail.bottom - 10.0F), UiRgb(kFluentDesign.secondary));
-        }
-
-        const D2D1_POINT_2F left = D2D1::Point2F(panel.left + 44.0F, buttonsY);
-        const D2D1_POINT_2F right = D2D1::Point2F(panel.left + 114.0F, buttonsY);
-        const D2D1_POINT_2F middle = D2D1::Point2F(panel.left + 184.0F, buttonsY);
-        DrawButton(context, left, L"L", context.test.LeftDown(), context.test.LeftComplete());
-        DrawButton(context, right, L"R", context.test.RightDown(), context.test.RightComplete());
-        DrawButton(context, middle, L"M", context.test.MiddleDown(), context.test.MiddleComplete());
-
-        const Progress& value = context.test.Current();
-        const std::wstring buttons = L"L " + std::to_wstring(value.leftClicks) + L"/" + std::to_wstring(config.leftClicks) +
-            L"  R " + std::to_wstring(value.rightClicks) + L"/" + std::to_wstring(config.rightClicks) +
-            L"  M " + std::to_wstring(value.middleClicks) + L"/" + std::to_wstring(config.middleClicks);
-        DrawText(context, buttons, context.subtitleFormat.Get(),
-            D2D1::RectF(panel.left + 20.0F, panel.bottom - 64.0F, panel.right - 20.0F, panel.bottom - 40.0F),
-            UiRgb(kFluentDesign.text));
-        const std::wstring wheel = L"↑ " + std::to_wstring(value.wheelUp / 120U) + L"/" + std::to_wstring(config.wheelSteps) +
-            L"  ↓ " + std::to_wstring(value.wheelDown / 120U) + L"/" + std::to_wstring(config.wheelSteps);
-        DrawText(context, wheel, context.subtitleFormat.Get(),
-            D2D1::RectF(panel.left + 20.0F, panel.bottom - 40.0F, panel.right - 20.0F, panel.bottom - 16.0F),
-            UiRgb(kFluentDesign.secondary));
-    }
+    const float legendTop = size.height - 28.0F;
+    const float legendRight = (std::min)(size.width - margin, margin + 500.0F);
+    context.brush->SetColor(ColorA(0xFFFFFF, 0.86F));
+    context.target->FillRoundedRectangle(D2D1::RoundedRect(
+        D2D1::RectF(margin - 8.0F, legendTop - 6.0F, legendRight, legendTop + 24.0F), 8.0F, 8.0F),
+        context.brush.Get());
+    float x = margin + 4.0F;
+    context.brush->SetColor(Color(kMoveInk));
+    context.target->DrawLine(D2D1::Point2F(x, legendTop + 9.0F), D2D1::Point2F(x + 16.0F, legendTop + 9.0F),
+        context.brush.Get(), 2.5F);
+    DrawText(context, Text(language, L"移动", L"Move", L"Di chuyển"), context.subtitleFormat.Get(),
+        D2D1::RectF(x + 22.0F, legendTop, x + 90.0F, legendTop + 18.0F), UiRgb(kFluentDesign.text));
+    x += 92.0F;
+    context.brush->SetColor(Color(kDragInk));
+    context.target->DrawLine(D2D1::Point2F(x, legendTop + 9.0F), D2D1::Point2F(x + 16.0F, legendTop + 9.0F),
+        context.brush.Get(), 4.0F);
+    DrawText(context, Text(language, L"拖动", L"Drag", L"Kéo"), context.subtitleFormat.Get(),
+        D2D1::RectF(x + 22.0F, legendTop, x + 100.0F, legendTop + 18.0F), UiRgb(kFluentDesign.text));
+    x += 102.0F;
+    context.brush->SetColor(Color(kClickInk));
+    context.target->FillEllipse(D2D1::Ellipse(D2D1::Point2F(x + 6.0F, legendTop + 9.0F), 5.0F, 5.0F),
+        context.brush.Get());
+    DrawText(context, Text(language, L"左键单击", L"Left click", L"Nhấp trái"), context.subtitleFormat.Get(),
+        D2D1::RectF(x + 16.0F, legendTop, x + 120.0F, legendTop + 18.0F), UiRgb(kFluentDesign.text));
 
     const HRESULT result = context.target->EndDraw();
     if (result == D2DERR_RECREATE_TARGET)
@@ -688,6 +557,8 @@ LRESULT CALLBACK WindowProcedure(const HWND window, const UINT message, const WP
             if (!frame.HasInput()) return DefWindowProcW(window, message, wParam, lParam);
 
             const ULONGLONG now = GetTickCount64();
+            const unsigned clicksBefore = context->test.Current().leftClicks +
+                context->test.Current().doubleClicks;
             if (frame.leftDown) context->test.Button(MouseButton::Left, true, now);
             if (frame.rightDown) context->test.Button(MouseButton::Right, true, now);
             if (frame.middleDown) context->test.Button(MouseButton::Middle, true, now);
@@ -700,6 +571,10 @@ LRESULT CALLBACK WindowProcedure(const HWND window, const UINT message, const WP
             if (frame.leftUp) context->test.Button(MouseButton::Left, false, now);
             if (frame.rightUp) context->test.Button(MouseButton::Right, false, now);
             if (frame.middleUp) context->test.Button(MouseButton::Middle, false, now);
+            const unsigned clicksAfter = context->test.Current().leftClicks +
+                context->test.Current().doubleClicks;
+            if (clicksAfter > clicksBefore) AddClickPoint(window, *context);
+
             const LRESULT defaultResult = DefWindowProcW(window, message, wParam, lParam);
             CheckComplete(window, *context);
             return defaultResult;
@@ -792,7 +667,7 @@ HWND CreateMouseWindow(const HWND owner, const std::shared_ptr<WindowState>& sta
     if (!GetMonitorInfoW(monitor, &information)) { error = L"GetMonitorInfoW 失败"; return nullptr; }
     Payload payload{state, &error};
     const RECT rect = information.rcMonitor;
-    const HWND window = CreateWindowExW(WS_EX_APPWINDOW, kClassName, L"MouseTest - Mouse", WS_POPUP,
+    const HWND window = CreateWindowExW(WS_EX_APPWINDOW | WS_EX_TOPMOST, kClassName, L"MouseTest - Mouse", WS_POPUP,
         rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top, owner, nullptr,
         GetModuleHandleW(nullptr), &payload);
     if (!window)
@@ -808,7 +683,6 @@ HWND CreateMouseWindow(const HWND owner, const std::shared_ptr<WindowState>& sta
         SetForegroundWindow(window);
         SetActiveWindow(window);
         SetFocus(window);
-        SetWindowPos(window, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
     }
     if (!state->skipHardwareCheck && !PostMessageW(window, kInitializeMessage, 0U, 0))
     {
@@ -828,6 +702,7 @@ bool SubmitMoveForTesting(const HWND window, const LONG dx, const LONG dy) noexc
     try
     {
         context->test.Move(dx, dy);
+        UpdateTrail(window, *context);
         CheckComplete(window, *context);
         return true;
     }
@@ -855,7 +730,10 @@ bool SubmitButtonForTesting(const HWND window, const MouseButton button, const b
     if (context == nullptr || context->finishing || context->passed) return false;
     try
     {
+        const unsigned before = context->test.Current().leftClicks + context->test.Current().doubleClicks;
         context->test.Button(button, down, GetTickCount64());
+        const unsigned after = context->test.Current().leftClicks + context->test.Current().doubleClicks;
+        if (after > before) AddClickPoint(window, *context);
         CheckComplete(window, *context);
         return true;
     }
