@@ -136,6 +136,7 @@ struct Context final
     ComPtr<IDWriteTextFormat> subtitleFormat;
     ComPtr<IDWriteTextFormat> dotLabelFormat;
     ComPtr<IDWriteTextFormat> progressFormat;
+    ComPtr<IDWriteTextFormat> statusFormat;
     ComPtr<IDWriteTextFormat> hintFormat;
 };
 
@@ -146,6 +147,18 @@ void DrawText(Context& context, const std::wstring_view value, IDWriteTextFormat
     context.brush->SetColor(Color(rgb));
     context.target->DrawTextW(value.data(), static_cast<UINT32>(value.size()), format, rect,
         context.brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+}
+
+void DrawProgressBar(Context& context, const D2D1_RECT_F bar, const float ratio, const bool complete)
+{
+    context.brush->SetColor(Color(0xE6EBF1));
+    context.target->FillRoundedRectangle(D2D1::RoundedRect(bar, 2.0F, 2.0F), context.brush.Get());
+    const float progress = (std::clamp)(ratio, 0.0F, 1.0F);
+    if (progress <= 0.0F) return;
+    D2D1_RECT_F filled = bar;
+    filled.right = bar.left + (bar.right - bar.left) * progress;
+    context.brush->SetColor(Color(complete ? kClickInk : UiRgb(kFluentDesign.accent)));
+    context.target->FillRoundedRectangle(D2D1::RoundedRect(filled, 2.0F, 2.0F), context.brush.Get());
 }
 
 [[nodiscard]] HRESULT EnsureResources(const HWND window, Context& context)
@@ -165,6 +178,7 @@ void DrawText(Context& context, const std::wstring_view value, IDWriteTextFormat
         result = make(28.0F, DWRITE_FONT_WEIGHT_SEMI_BOLD, context.titleFormat);
         if (SUCCEEDED(result)) result = make(13.0F, DWRITE_FONT_WEIGHT_NORMAL, context.subtitleFormat);
         if (SUCCEEDED(result)) result = make(11.0F, DWRITE_FONT_WEIGHT_NORMAL, context.dotLabelFormat);        if (SUCCEEDED(result)) result = make(13.0F, DWRITE_FONT_WEIGHT_SEMI_BOLD, context.progressFormat);
+        if (SUCCEEDED(result)) result = make(12.5F, DWRITE_FONT_WEIGHT_SEMI_BOLD, context.statusFormat);
         if (SUCCEEDED(result)) result = make(16.0F, DWRITE_FONT_WEIGHT_NORMAL, context.hintFormat);
         if (FAILED(result)) return result;
         static_cast<void>(context.dotLabelFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER));
@@ -350,12 +364,13 @@ void Paint(const HWND window, Context& context)
     context.target->Clear(Color(UiRgb(kFluentDesign.window)));
     DrawTrail(window, context);
 
-    const float headerHeight = (std::clamp)(size.height * 0.14F, 108.0F, 136.0F);
+    const float headerHeight = (std::clamp)(size.height * 0.16F, 132.0F, 148.0F);
     const float margin = (std::clamp)(size.width * 0.03F, 20.0F, 48.0F);
-    const float titleTop = (std::max)(6.0F, headerHeight * 0.08F);
-    const float subtitleTop = titleTop + 34.0F;
-    const float dotCenterY = headerHeight - 28.0F;
-    const float labelTop = headerHeight - 16.0F;
+    const float titleTop = (std::max)(6.0F, headerHeight * 0.05F);
+    const float subtitleTop = titleTop + 38.0F;
+    const float dotCenterY = headerHeight - 56.0F;
+    const float labelTop = headerHeight - 44.0F;
+    const float statusTop = headerHeight - 24.0F;
 
     if (context.trail.empty() && !passed)
     {
@@ -417,6 +432,37 @@ void Paint(const HWND window, Context& context)
             D2D1::RectF(centerX - slotWidth * 0.5F + 2.0F, labelTop,
                 centerX + slotWidth * 0.5F - 2.0F, labelTop + 16.0F),
             done ? kClickInk : UiRgb(kFluentDesign.secondary));
+    }
+
+    const Progress& live = context.test.Current();
+    const bool moveDisabled = config.moveDistance == 0U && config.moveAxisDistance == 0U;
+    const bool moveDone = context.test.MoveComplete();
+    const unsigned moveColor = moveDisabled ? UiRgb(kFluentDesign.secondary) :
+        moveDone ? kClickInk : UiRgb(kFluentDesign.accent);
+    DrawText(context, Text(language, L"滑动", L"Move", L"Di chuyển"), context.subtitleFormat.Get(),
+        D2D1::RectF(margin, statusTop, margin + 72.0F, statusTop + 18.0F),
+        UiRgb(kFluentDesign.secondary));
+    std::wstring moveValue;
+    if (moveDisabled)
+        moveValue = Text(language, L"未启用", L"disabled", L"Đã tắt");
+    else if (moveDone)
+        moveValue = Text(language, L"已完成", L"complete", L"Đã xong");
+    else
+        moveValue = Text(language, L"总 ", L"total ", L"tổng ") +
+            std::to_wstring(live.moveTotal) + L" / " + std::to_wstring(config.moveDistance);
+    DrawText(context, moveValue, context.statusFormat.Get(),
+        D2D1::RectF(margin + 76.0F, statusTop, margin + 224.0F, statusTop + 18.0F), moveColor);
+    DrawProgressBar(context,
+        D2D1::RectF(margin + 228.0F, statusTop + 7.0F, margin + 348.0F, statusTop + 11.0F),
+        moveDisabled ? 0.0F : TaskProgress(config, context.test, 0U), moveDone && !moveDisabled);
+    if (!moveDisabled)
+    {
+        const std::wstring axes = L"X " + std::to_wstring(live.moveX) + L"/" +
+            std::to_wstring(config.moveAxisDistance) + L"  ·  Y " + std::to_wstring(live.moveY) +
+            L"/" + std::to_wstring(config.moveAxisDistance);
+        DrawText(context, axes, context.subtitleFormat.Get(),
+            D2D1::RectF(margin + 358.0F, statusTop, size.width - margin, statusTop + 18.0F),
+            moveDone ? kClickInk : UiRgb(kFluentDesign.secondary));
     }
 
     const float legendTop = size.height - 28.0F;
