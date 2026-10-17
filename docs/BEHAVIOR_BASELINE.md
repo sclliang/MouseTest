@@ -12,6 +12,7 @@
 - `[TouchPad] Enabled` 缺失默认 `1`；`[Mouse] Enabled` 缺失默认 `0`。
 - `Enabled` 只允许 `0` 或 `1`；两项都禁用时启动 FAIL。
 - 两项都启用时固定按 TouchPad、Mouse 顺序依次运行；每一项独立创建、显示、销毁自己的窗口。
+- 任一项 FAIL 或 CANCEL 不会跳过后续已启用测试；全部运行结束后统一汇总。
 - 任一项 FAIL，整体 FAIL；任一项 CANCEL 且无 FAIL，整体 CANCEL；全部 PASS 才 PASS。
 - 被禁用测试的配置节不解析，其非法值不会阻止已启用测试。
 

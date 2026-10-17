@@ -29,7 +29,7 @@ Enabled=0
 
 - `[TouchPad] Enabled` 缺失时默认 `1`；`[Mouse] Enabled` 缺失时默认 `0`。至少保留一个 `Enabled=1`。
 - 只测普通鼠标：`[TouchPad] Enabled=0`，`[Mouse] Enabled=1`。
-- 两项都启用时依次运行 TouchPad、Mouse；只有两项都 PASS，整体才 PASS。
+- 两项都启用时依次运行 TouchPad、Mouse；只有两项都 PASS，整体才 PASS。任一项 FAIL/CANCEL 不会跳过后续已启用测试，最终统一汇总。
 - 被禁用测试的配置节不会被解析，其错误不会阻止另一项测试。
 
 窗口覆盖主显示器完整屏幕。TouchPad 测试隐藏鼠标指针；Mouse 测试显示鼠标指针。两项测试都没有整体超时，未完成时持续等待输入；`Esc` 或关闭窗口为 FAIL。
