@@ -1,0 +1,6 @@
+[1.0.10.17] - 2026-10-17
+- 从 FactoryTestCases 2.15.10.17 的 TouchPad 模块抽出独立 MouseTest 工具，不再依赖宿主、模块注册或其他测试模块。
+- 保持 HID UsagePage=0x0D/Usage=0x05 识别、5×10 默认网格、Finger 角落免测区、左右键计数、全屏窗口、Esc/关窗 FAIL 和自动 PASS 判定。
+- 独立读取程序目录 config.ini，支持 zh-CN/en-US/vi-VN；文件缺失时使用内置默认值，非法配置只阻止本次启动并写日志。
+- 测试结果在内存缓存，结束后一次写入程序目录 MouseTest.log；退出码 0=PASS、1=FAIL、2=CANCEL、3=日志失败或无法启动。
+- 新增配置解析、网格判定和隐藏窗口生命周期定向测试，覆盖成对回退、免测区、PASS、Esc、取消和关窗。
