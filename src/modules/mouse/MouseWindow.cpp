@@ -202,7 +202,21 @@ void DrawProgressBar(Context& context, const D2D1_RECT_F bar, const float ratio)
 [[nodiscard]] std::wstring CountDetail(const Language language, const unsigned count)
 {
     if (count == 0U) return Text(language, L"已禁用", L"Disabled", L"Đã tắt");
-    return std::to_wstring(count) + Text(language, L" 次", L" time(s)", L" lần");
+    if (language == Language::English)
+        return std::to_wstring(count) + (count == 1U ? L" time" : L" times");
+    return std::to_wstring(count) + Text(language, L" 次", L"", L" lần");
+}
+
+[[nodiscard]] std::wstring ProgressText(const Language language, const unsigned completed, const bool passed)
+{
+    const unsigned value = passed ? 7U : completed;
+    switch (language)
+    {
+    case Language::Chinese: return L"已完成 " + std::to_wstring(value) + L"/7";
+    case Language::English: return std::to_wstring(value) + L"/7 done";
+    case Language::Vietnamese: return L"Đã xong " + std::to_wstring(value) + L"/7";
+    }
+    return {};
 }
 
 [[nodiscard]] std::wstring TaskDetail(const Config& config, const unsigned index)
@@ -219,19 +233,27 @@ void DrawProgressBar(Context& context, const D2D1_RECT_F bar, const float ratio)
             std::to_wstring(config.moveDistance);
     case 1U:
         if (config.wheelSteps == 0U) return Text(language, L"已禁用", L"Disabled", L"Đã tắt");
-        return Text(language, L"向上/向下各 ", L"Up/down each ", L"Lên/xuống mỗi hướng ") +
-            std::to_wstring(config.wheelSteps) + Text(language, L" 格", L" notch(es)", L" nấc");
+        if (language == Language::English)
+            return L"Up/down each " + std::to_wstring(config.wheelSteps) +
+                (config.wheelSteps == 1U ? L" notch" : L" notches");
+        return Text(language, L"向上/向下各 ", L"", L"Lên/xuống mỗi hướng ") +
+            std::to_wstring(config.wheelSteps) + Text(language, L" 格", L"", L" nấc");
     case 2U: return CountDetail(language, config.leftClicks);
     case 3U:
-        return config.doubleClicks == 0U ? Text(language, L"已禁用", L"Disabled", L"Đã tắt") :
-            Text(language, L"快速双击 ", L"Quick double-click ", L"Nhấp nhanh hai lần ") +
-                CountDetail(language, config.doubleClicks);
+        if (config.doubleClicks == 0U) return Text(language, L"已禁用", L"Disabled", L"Đã tắt");
+        if (language == Language::English)
+            return config.doubleClicks == 1U ? L"Double-click quickly once" :
+                L"Double-click quickly " + std::to_wstring(config.doubleClicks) + L" times";
+        return Text(language, L"快速双击 ", L"", L"Nhấp đúp nhanh ") +
+            std::to_wstring(config.doubleClicks) + Text(language, L" 次", L"", L" lần");
     case 4U: return CountDetail(language, config.rightClicks);
     case 5U: return CountDetail(language, config.middleClicks);
     default:
         if (config.drags == 0U) return Text(language, L"已禁用", L"Disabled", L"Đã tắt");
-        return Text(language, L"按住左键拖动 ", L"Hold left and drag ", L"Giữ trái và kéo ") +
-            std::to_wstring(config.dragDistance);
+        if (language == Language::English)
+            return L"Hold left and drag " + std::to_wstring(config.dragDistance) + L" counts";
+        return Text(language, L"按住左键拖动 ", L"", L"Giữ trái và kéo ") +
+            std::to_wstring(config.dragDistance) + Text(language, L" 计数", L"", L" đơn vị");
     }
 }
 
@@ -282,11 +304,11 @@ void DrawProgressBar(Context& context, const D2D1_RECT_F bar, const float ratio)
     switch (config.language)
     {
     case Language::Chinese:
-        return L"单击：按下后原地松开；拖动：按住左键移动超过 " + distance + L" 后松开";
+        return L"单击：按下后原地松开；拖动：按住左键移动超过 " + distance + L" 计数后松开";
     case Language::English:
-        return L"Click: press and release in place; Drag: hold left and move more than " + distance;
+        return L"Click: press and release in place; Drag: hold left and move more than " + distance + L" counts";
     case Language::Vietnamese:
-        return L"Nhấp: nhấn và nhả tại chỗ; Kéo: giữ trái và di chuyển hơn " + distance;
+        return L"Nhấp: nhấn và nhả tại chỗ; Kéo: giữ trái và di chuyển hơn " + distance + L" đơn vị";
     }
     return {};
 }
@@ -390,10 +412,7 @@ void Paint(const HWND window, Context& context)
             L"Dùng chuột thường hoàn thành mọi thao tác · Esc: lỗi và thoát"),
         context.subtitleFormat.Get(), D2D1::RectF(margin, titleTop + 44.0F, size.width - margin, titleTop + 70.0F),
         UiRgb(kFluentDesign.secondary));
-    const std::wstring progressText =
-        (passed ? Text(language, L"已完成 7/7", L"7/7 done", L"Đã xong 7/7") :
-            Text(language, L"已完成 ", L"done ", L"Đã xong ") +
-            std::to_wstring(context.test.CompletedTasks()) + L"/7");
+    const std::wstring progressText = ProgressText(language, context.test.CompletedTasks(), passed);
     DrawText(context, progressText, context.liveFormat.Get(),
         D2D1::RectF(size.width * 0.55F, titleTop + 8.0F, size.width - margin, titleTop + 32.0F),
         passed ? 0x107C10 : UiRgb(kFluentDesign.accent));
