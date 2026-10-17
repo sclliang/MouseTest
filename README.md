@@ -9,6 +9,7 @@ MouseTest 是从 `FactoryTestCases` 的 `TouchPad` 模块抽出并扩展的独�
 - 源版本：`2.15.10.17`
 - 本工具版本：`1.1.10.17`
 - 公开源码：https://github.com/sclliang/MouseTest
+- 下载发布包：https://github.com/sclliang/MouseTest/releases/latest
 
 ## 使用
 
