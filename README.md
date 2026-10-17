@@ -128,6 +128,10 @@ ClickTolerance=8
 
 ## 验证状态
 
-TouchPad 和 Mouse 的配置解析、判定逻辑、隐藏窗口生命周期、PASS、Esc、关窗及按钮/滚轮/拖动注入已有定向测试；正式 EXE 编译和版本信息已核对。真实 Precision Touchpad、真实普通鼠标、左右物理按键、边缘/快速划动、目标机型以及 100%–200% DPI 仍需目标机实机验证，当前状态为**代码完成未实测**。
+TouchPad 和 Mouse 的配置解析、判定逻辑、隐藏窗口生命周期、PASS、Esc、关窗及按钮/滚轮/拖动注入已有定向测试；正式 EXE 编译和版本信息已核对。
 
-行为细节见 `docs\BEHAVIOR_BASELINE.md`，本次验证范围见 `docs\releases\v1.1.10.17.md`。
+2026-10-17 已在开发机（DESKTOP-H71214H，Windows 11 10.0.26300，2560×1440）用实际鼠标完成鼠标测试全部 7 项，日志记录 `Mouse result: PASS`、耗时 27.343 秒、退出码 0。当时在线设备包括 Razer Viper V3 HyperSpeed（`VID_1532&PID_00B8`）和另一个 HID mouse（`VID_391D&PID_2A04`），测试不区分具体鼠标。
+
+该通过仅代表这一台开发机、这一组鼠标和当时的配置，不代表目标工厂机、其他鼠标型号或全部 DPI。TouchPad 真实硬件仍未验证（当前开发机没有 Precision Touchpad），状态为**代码完成未实测**。鼠标测试状态为**开发机实机通过，目标机待验证**。
+
+行为细节见 `docs\BEHAVIOR_BASELINE.md`，验证范围见 `docs\releases\v1.1.10.17.md`。
